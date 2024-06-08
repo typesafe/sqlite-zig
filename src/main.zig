@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const DatabaseHeader = @import("DatabaseHeader.zig").DatabaseHeader;
+const Database = @import("Database.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -22,10 +22,17 @@ pub fn main() !void {
         var file = try std.fs.cwd().openFile(database_file_path, .{});
         defer file.close();
 
-        const header = try file.reader().readStruct(DatabaseHeader);
+        const database = try Database.init(file);
+
+        const header = try database.readHeader();
+        const page = try database.readPage();
 
         try std.io.getStdOut().writer().print("database page size: {}\n", .{
-            std.mem.readInt(u16, &header.pageSize, .big),
+            header.page_size,
+        });
+
+        try std.io.getStdOut().writer().print("number of tables: {}\n", .{
+            page.header.cell_count,
         });
     }
 }
