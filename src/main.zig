@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const DatabaseHeader = @import("DatabaseHeader.zig").DatabaseHeader;
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -20,14 +22,10 @@ pub fn main() !void {
         var file = try std.fs.cwd().openFile(database_file_path, .{});
         defer file.close();
 
-        // You can use print statements as follows for debugging, they'll be visible when running tests.
-        try std.io.getStdOut().writer().print("Logs from your program will appear here\n", .{});
+        const header = try file.reader().readStruct(DatabaseHeader);
 
-        // Uncomment this block to pass the first stage
-        // var buf: [2]u8 = undefined;
-        // _ = try file.seekTo(16);
-        // _ = try file.read(&buf);
-        // const page_size = std.mem.readInt(u16, &buf, .big);
-        // try std.io.getStdOut().writer().print("database page size: {}\n", .{page_size});
+        try std.io.getStdOut().writer().print("database page size: {}\n", .{
+            std.mem.readInt(u16, &header.pageSize, .big),
+        });
     }
 }

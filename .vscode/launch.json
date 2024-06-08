@@ -1,0 +1,20 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "name": ".dbinfo",
+        "type": "lldb",
+        "request": "launch",
+        "cwd": "${workspaceRoot}",
+        "program": "zig",
+        "args": [
+          "run",
+          "./src/main.zig",
+          "--",
+          "sample.db",
+          ".dbinfo"
+        ]
+      }
+    ]
+  }
+  
