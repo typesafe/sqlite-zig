@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const Varint = @import("./storage/Varint.zig");
+
 pub const PageType = enum(u8) {
     branch_index = 0x02,
     branch_table = 0x05,
@@ -8,40 +10,168 @@ pub const PageType = enum(u8) {
 };
 
 pub const PageHeader = struct {
-    typ: PageType,
+    type: PageType,
     /// The start of the first freeblock on the page, zero if there are no freeblocks.
-    free_block_offset: u16,
+    freeblock_offset: u16,
     /// The number of cells on the page.
     cell_count: u16,
     /// The start of the cell content area.
     cell_content_offset: u16,
     /// The number of fragmented free bytes within the cell content area.
     fragmented_free_bytes_count: u8,
-    /// the right-most pointer. This value appears in the header of interior b-tree pages only and is omitted from all other pages.
-    right_pointer: ?u32,
+    cell_offsets: []const usize,
 
-    pub fn parse(reader: std.fs.File.Reader) !PageHeader {
+    pub fn parse(reader: std.fs.File.Reader, allocator: std.mem.Allocator) !PageHeader {
         const typ = try reader.readEnum(PageType, .big);
+        const freeblock_offset = try reader.readInt(u16, .big);
+        const cell_count = try reader.readInt(u16, .big);
+        const cell_content_offset = try reader.readInt(u16, .big);
+        const fragmented_free_bytes_count = try reader.readInt(u8, .big);
 
         return .{
-            .typ = typ,
-            .free_block_offset = try reader.readInt(u16, .big),
-            .cell_count = try reader.readInt(u16, .big),
-            .cell_content_offset = try reader.readInt(u16, .big),
-            .fragmented_free_bytes_count = try reader.readInt(u8, .big),
-            .right_pointer = switch (typ) {
-                .branch_index, .branch_table => try reader.readInt(u32, .big),
-                else => null,
+            .type = typ,
+            .freeblock_offset = freeblock_offset,
+            .cell_count = cell_count,
+            .cell_content_offset = cell_content_offset,
+            .fragmented_free_bytes_count = fragmented_free_bytes_count,
+            .cell_offsets = blk: {
+                var offsets = try std.ArrayList(usize).initCapacity(allocator, cell_count);
+                var values = try offsets.addManyAsSlice(cell_count);
+                for (0..cell_count) |i| {
+                    values[cell_count - 1 - i] = try reader.readInt(u16, .big);
+                }
+                break :blk offsets.items;
             },
+        };
+    }
+};
+
+// pub const Field = struct {
+//     name: []const u8,
+//     value: Value,
+// };
+
+pub const Value = union(enum) {
+    Null: void,
+    Text: []const u8,
+    Integer: isize,
+};
+
+pub const Record = struct {
+    id: usize,
+    fields: std.ArrayList(Value),
+
+    pub fn parse(reader: std.fs.File.Reader, allocator: std.mem.Allocator) !Record {
+        // Record header:
+        const len = try Varint.parse(reader.any());
+        const id = try Varint.parse(reader.any());
+
+        _ = len;
+
+        // we need to deal with this annoying structure:
+        // PL L1 L2 L2 L3 V1 V1 V1 V2 V2 V2 V2 V2 V3 V3
+        // -- -- ----- -- -------- -------------- -----
+        // PL (payload offset) -> point to first byte of V1
+        // Ln -> length (and type) of Value n
+        // Vn -> actual value of field
+        //
+        // A number of fields instead of an offset in bytes would have been so much more practical! :-/
+        // now we need to keep track of how many bytes we read... (instead of just moving forward)
+
+        const payload_start = try reader.context.getPos(); // points to PL now
+        const payload_offset = try Varint.parse(reader.any()); // could be more than 1 byte
+
+        var len_offset = try reader.context.getPos(); // points to L1
+        var value_offset = payload_start + payload_offset; // points to V1
+
+        var fields = std.ArrayList(Value).init(allocator);
+
+        while (true) {
+            if (len_offset == payload_start + payload_offset) {
+                break;
+            }
+
+            const field = try fields.addOne();
+
+            try reader.context.seekTo(len_offset);
+            const serial_type = try Varint.parse(reader.any());
+            len_offset = try reader.context.getPos();
+
+            try reader.context.seekTo(value_offset);
+            field.* = switch (serial_type) {
+                0 => .{ .Null = {} },
+                1 => .{ .Integer = try reader.readInt(u8, .big) },
+                2...6 => unreachable, // ixx
+                7 => unreachable, // f64
+                8 => .{ .Integer = 0 },
+                9 => .{ .Integer = 1 },
+                10...11 => unreachable,
+
+                else => blk: {
+                    // text = 13, blob = 12
+                    const t: usize = if (serial_type & 1 == 1) 13 else 12;
+
+                    const l = (serial_type - t) >> 1;
+                    var value = try std.ArrayList(u8).initCapacity(allocator, l);
+                    _ = try value.addManyAt(0, l);
+                    _ = try reader.read(value.items);
+
+                    break :blk .{ .Text = value.items };
+                },
+            };
+            value_offset = try reader.context.getPos();
+        }
+
+        return .{
+            .id = id,
+            .fields = fields,
         };
     }
 };
 
 pub const Page = struct {
     header: PageHeader,
+    records: std.ArrayList(Record),
 
-    pub fn parse(reader: std.fs.File.Reader) !Page {
-        return .{ .header = try PageHeader.parse(reader) };
+    pub fn parse(reader: std.fs.File.Reader, allocator: std.mem.Allocator) !Page {
+        const header = try PageHeader.parse(reader, allocator);
+        var records = std.ArrayList(Record).init(allocator);
+
+        for (header.cell_offsets) |offset| {
+            try reader.context.seekTo(offset);
+
+            const r = try records.addOne();
+            r.* = try Record.parse(reader, allocator);
+        }
+
+        return .{
+            .header = header,
+            .records = records,
+        };
+
+        // while (n < btree_header.num_cells) {
+        //     const cell_offset_bytes = [2]u8{ page[pos], page[pos + 1] };
+        //     const cell_offset = std.mem.readInt(u16, &cell_offset_bytes, .Big);
+        //     const n_bytes = try read_varint(page[cell_offset..]);
+        //     const row_id = try read_varint(page[cell_offset + n_bytes.bytes_read..]);
+        //     const payload_offset = cell_offset + n_bytes.bytes_read + row_id.bytes_read;
+        //     const payload = page[payload_offset..payload_offset + n_bytes.value];
+        //     const cell_header_length = try read_varint(payload[0..]);
+        //     var taken = cell_header_length.bytes_read;
+        //     var cols = std.ArrayList(VarInt).init(allocator);
+        //     while (taken < cell_header_length.value) {
+        //         const col = try read_varint(payload[taken..]);
+        //         try cols.append(col);
+        //         taken += col.bytes_read;
+        //     }
+        //     const start_of_table_name = payload[taken..][(cols.items[0].value - 13) / 2..];
+        //     const table_name = start_of_table_name[0..(cols.items[1].value - 13) / 2];
+        //     try std.io.getStdOut().writer().print("{s} ", .{table_name});
+        //     cols.deinit();
+        //     pos += 2;
+        //     n += 1;
+        // }
+        // try std.io.getStdOut().writer().print("\n", .{});
     }
 };
 
