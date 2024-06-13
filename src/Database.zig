@@ -20,8 +20,16 @@ pub fn readHeader(self: Self) !storage.DatabaseHeader {
     return try storage.DatabaseHeader.parse(self.file.reader());
 }
 
-pub fn readPage(self: Self) !storage.Page {
-    try self.file.seekTo(100);
+pub fn readPage(self: Self, number: usize) !storage.Page {
+    const header = try self.readHeader();
+
+    if (number == 1) {
+        // page 1 contains the DB header
+        try self.file.seekTo(100);
+    } else {
+        try self.file.seekTo(header.page_size * (number - 1));
+    }
+
     const reader = self.file.reader();
 
     return try storage.Page.parse(reader, self.allocator);

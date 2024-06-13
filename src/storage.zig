@@ -55,6 +55,7 @@ pub const Value = union(enum) {
     Null: void,
     Text: []const u8,
     Integer: isize,
+    Float: f64,
 };
 
 pub const Record = struct {
@@ -98,15 +99,24 @@ pub const Record = struct {
             len_offset = try reader.context.getPos();
 
             try reader.context.seekTo(value_offset);
+
             field.* = switch (serial_type) {
                 0 => .{ .Null = {} },
-                1 => .{ .Integer = try reader.readInt(u8, .big) },
-                2...6 => unreachable, // ixx
-                7 => unreachable, // f64
+                1 => .{ .Integer = try reader.readInt(i8, .big) },
+                2 => .{ .Integer = try reader.readInt(i16, .big) },
+                3 => .{ .Integer = try reader.readInt(i24, .big) },
+                4 => .{ .Integer = try reader.readInt(i32, .big) },
+                5 => .{ .Integer = try reader.readInt(i48, .big) },
+                6 => .{ .Integer = try reader.readInt(i64, .big) },
+                7 => blk: {
+                    var bytes: [8]u8 = undefined;
+                    _ = try reader.readAll(&bytes);
+
+                    break :blk .{ .Float = std.mem.bytesToValue(f64, &bytes) };
+                },
                 8 => .{ .Integer = 0 },
                 9 => .{ .Integer = 1 },
                 10...11 => unreachable,
-
                 else => blk: {
                     // text = 13, blob = 12
                     const t: usize = if (serial_type & 1 == 1) 13 else 12;
@@ -129,16 +139,37 @@ pub const Record = struct {
     }
 };
 
+pub fn Table(comptime R: type) type {
+    return struct {
+        pub const RecordIterator = struct {
+            pub fn next(_: *@This()) ?*R {
+                return null;
+            }
+        };
+
+        pub fn recordIterator() RecordIterator {
+            return RecordIterator{};
+        }
+    };
+}
+
 pub const Page = struct {
     header: PageHeader,
     records: std.ArrayList(Record),
 
     pub fn parse(reader: std.fs.File.Reader, allocator: std.mem.Allocator) !Page {
+        var page_offset = try reader.context.getPos();
+        // I assume there was a good reason (alignment?) for including the db header in the
+        // first page, but it introduces some annouyting "point of attention"...
+        if (page_offset == 100) {
+            page_offset = 0;
+        }
+
         const header = try PageHeader.parse(reader, allocator);
         var records = std.ArrayList(Record).init(allocator);
 
         for (header.cell_offsets) |offset| {
-            try reader.context.seekTo(offset);
+            try reader.context.seekTo(page_offset + offset);
 
             const r = try records.addOne();
             r.* = try Record.parse(reader, allocator);
@@ -148,30 +179,6 @@ pub const Page = struct {
             .header = header,
             .records = records,
         };
-
-        // while (n < btree_header.num_cells) {
-        //     const cell_offset_bytes = [2]u8{ page[pos], page[pos + 1] };
-        //     const cell_offset = std.mem.readInt(u16, &cell_offset_bytes, .Big);
-        //     const n_bytes = try read_varint(page[cell_offset..]);
-        //     const row_id = try read_varint(page[cell_offset + n_bytes.bytes_read..]);
-        //     const payload_offset = cell_offset + n_bytes.bytes_read + row_id.bytes_read;
-        //     const payload = page[payload_offset..payload_offset + n_bytes.value];
-        //     const cell_header_length = try read_varint(payload[0..]);
-        //     var taken = cell_header_length.bytes_read;
-        //     var cols = std.ArrayList(VarInt).init(allocator);
-        //     while (taken < cell_header_length.value) {
-        //         const col = try read_varint(payload[taken..]);
-        //         try cols.append(col);
-        //         taken += col.bytes_read;
-        //     }
-        //     const start_of_table_name = payload[taken..][(cols.items[0].value - 13) / 2..];
-        //     const table_name = start_of_table_name[0..(cols.items[1].value - 13) / 2];
-        //     try std.io.getStdOut().writer().print("{s} ", .{table_name});
-        //     cols.deinit();
-        //     pos += 2;
-        //     n += 1;
-        // }
-        // try std.io.getStdOut().writer().print("\n", .{});
     }
 };
 

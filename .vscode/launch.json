@@ -1,34 +1,35 @@
 {
-    "version": "0.2.0",
-    "configurations": [
-      {
-        "name": ".dbinfo",
-        "type": "lldb",
-        "request": "launch",
-        "cwd": "${workspaceRoot}",
-        "program": "zig",
-        "args": [
-          "run",
-          "./src/main.zig",
-          "--",
-          "sample.db",
-          ".dbinfo"
-        ]
-      },
-      {
-        "name": ".tables",
-        "type": "lldb",
-        "request": "launch",
-        "cwd": "${workspaceRoot}",
-        "program": "zig",
-        "args": [
-          "run",
-          "./src/main.zig",
-          "--",
-          "sample.db",
-          ".tables"
-        ]
-      }
-    ]
-  }
-  
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": ".dbinfo",
+      "type": "lldb",
+      "request": "launch",
+      "cwd": "${workspaceRoot}",
+      "program": "zig",
+      "args": ["run", "./src/main.zig", "--", "sample.db", ".dbinfo"]
+    },
+    {
+      "name": ".tables",
+      "type": "lldb",
+      "request": "launch",
+      "cwd": "${workspaceRoot}",
+      "program": "zig",
+      "args": ["run", "./src/main.zig", "--", "sample.db", ".tables"]
+    },
+    {
+      "name": "count apples",
+      "type": "lldb",
+      "request": "launch",
+      "cwd": "${workspaceRoot}",
+      "program": "zig",
+      "args": [
+        "run",
+        "./src/main.zig",
+        "--",
+        "sample.db",
+        "SELECT COUNT(*) FROM apples"
+      ]
+    }
+  ]
+}
