@@ -78,6 +78,14 @@ pub fn main() !void {
                             }
 
                             for (tbl.records.items) |item| {
+                                if (select.where) |where| {
+                                    const item_value = item.fields.items[schema.create_table.fields.get(where.field).?.index].Text;
+
+                                    if (!std.mem.eql(u8, item_value, where.value)) {
+                                        continue;
+                                    }
+                                }
+
                                 for (indexes, 0..) |idx, i| {
                                     if (i > 0) {
                                         try std.io.getStdOut().writer().print("|", .{});

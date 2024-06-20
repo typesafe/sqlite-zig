@@ -44,6 +44,20 @@
         "sample.db",
         "SELECT name FROM apples"
       ]
+    },
+    {
+      "name": "select with filter",
+      "type": "lldb",
+      "request": "launch",
+      "cwd": "${workspaceRoot}",
+      "program": "zig",
+      "args": [
+        "run",
+        "./src/main.zig",
+        "--",
+        "sample.db",
+        "SELECT name, color FROM apples WHERE color = 'Red'"
+      ]
     }
   ]
 }
