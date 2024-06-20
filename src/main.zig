@@ -2,6 +2,7 @@ const std = @import("std");
 
 const Database = @import("Database.zig");
 const SchemaRecord = @import("./sql/SchemaRecord.zig");
+const Parser = @import("./sql/Parser.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -52,19 +53,45 @@ pub fn main() !void {
         }
         try std.io.getStdOut().writer().print("\n", .{});
     } else if (std.ascii.eqlIgnoreCase(command[0..6], "SELECT")) {
+        const statement = try Parser.parse(command, arena.allocator());
 
-        // let's just assume `SELECT COUNT(*) FROM <table>` for starters...
-        // instead of parsing SQL code at this point...
-        const table = command[21..];
+        switch (statement) {
+            .select => |select| {
+                if (select.count) |_| {
+                    for (page.records.items) |r| {
+                        const sr = SchemaRecord.fromRecord(r);
+                        if (std.mem.eql(u8, sr.name, select.from)) {
+                            const tbl = try database.readPage(sr.rootpage);
+                            try std.io.getStdOut().writer().print("{}", .{tbl.records.items.len});
+                        }
+                    }
+                    try std.io.getStdOut().writer().print("\n", .{});
+                } else {
+                    for (page.records.items) |r| {
+                        const sr = SchemaRecord.fromRecord(r);
+                        if (std.mem.eql(u8, sr.name, select.from)) {
+                            const schema = try Parser.parse(sr.sql, arena.allocator());
+                            const tbl = try database.readPage(sr.rootpage);
+                            const indexes = try arena.allocator().alloc(u32, select.fields.items.len);
+                            for (select.fields.items, 0..) |field, i| {
+                                indexes[i] = schema.create_table.fields.get(field).?.index;
+                            }
 
-        for (page.records.items) |r| {
-            const sr = SchemaRecord.fromRecord(r);
-            if (std.mem.eql(u8, sr.name, table)) {
-                const apples = try database.readPage(sr.rootpage);
-                try std.io.getStdOut().writer().print("{}", .{apples.records.items.len});
-            }
+                            for (tbl.records.items) |item| {
+                                for (indexes, 0..) |idx, i| {
+                                    if (i > 0) {
+                                        try std.io.getStdOut().writer().print("|", .{});
+                                    }
+                                    try std.io.getStdOut().writer().print("{s}", .{item.fields.items[idx].Text});
+                                }
+                                try std.io.getStdOut().writer().print("\n", .{});
+                            }
+                        }
+                    }
+                }
+            },
+            else => try std.io.getStdOut().writer().print("not supported\n", .{}),
         }
-        try std.io.getStdOut().writer().print("\n", .{});
     } else {
         try std.io.getStdOut().writer().print("{s}\n", .{command});
     }

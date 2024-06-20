@@ -30,6 +30,20 @@
         "sample.db",
         "SELECT COUNT(*) FROM apples"
       ]
+    },
+    {
+      "name": "select apples",
+      "type": "lldb",
+      "request": "launch",
+      "cwd": "${workspaceRoot}",
+      "program": "zig",
+      "args": [
+        "run",
+        "./src/main.zig",
+        "--",
+        "sample.db",
+        "SELECT name FROM apples"
+      ]
     }
   ]
 }
