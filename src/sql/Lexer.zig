@@ -160,6 +160,7 @@ pub const Keyword = enum {
     select,
     from,
     count,
+    where,
 };
 
 const Keywords = std.ComptimeStringMapWithEql(Keyword, .{
@@ -174,6 +175,7 @@ const Keywords = std.ComptimeStringMapWithEql(Keyword, .{
     .{ "select", .select },
     .{ "from", .from },
     .{ "count", .count },
+    .{ "where", .where },
 }, std.ascii.eqlIgnoreCase);
 
 /// Operators, sorted by their precedence.
