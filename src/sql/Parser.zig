@@ -29,7 +29,16 @@ fn parseCreateTable(tr: *TokenReader, allocator: std.mem.Allocator) !SqlStatemen
     _ = tr.advance(); // create -> table
     _ = tr.advance(); // table -> name
 
-    const name = tr.current.?.identifier;
+    const name = blk: {
+        if (tr.current.? == .dquote) {
+            _ = tr.advance();
+            const res = tr.current.?.identifier;
+            _ = tr.advance();
+            break :blk res;
+        }
+
+        break :blk tr.current.?.identifier;
+    };
 
     _ = tr.advance(); // name -> '('
 
@@ -66,9 +75,8 @@ fn parseSelect(tr: *TokenReader, allocator: std.mem.Allocator) !SqlStatement {
                     .where => {
                         const field = tr.advance().?.identifier;
                         _ = tr.advance(); // =
-                        _ = tr.advance(); // '
+
                         const value = tr.advance().?.identifier;
-                        _ = tr.advance(); // '
 
                         select.where = .{ .field = field, .value = value };
                     },
@@ -122,6 +130,10 @@ fn parseFieldDefinition(tr: *TokenReader, index: u32, _: std.mem.Allocator) !Sql
                 .primary => {
                     _ = tr.advance(); // consume `key`
                     field.pk = true;
+                },
+                .not => {
+                    _ = tr.advance(); // consume `null`
+                    //field.pk = true;
                 },
                 else => unreachable,
             },
@@ -222,8 +234,8 @@ test "SELECT f1, f2 FROM tbl" {
     try std.testing.expectEqualStrings("tbl", res.select.from);
 }
 
-test "SELECT f1, f2 FROM tbl WHERE f1 = 'bar'" {
-    const sql = "SELECT f1, f2 FROM tbl WHERE f1 = 'bar'";
+test "SELECT f1, f2 FROM tbl WHERE f1 = 'foo bar'" {
+    const sql = "SELECT f1, f2 FROM tbl WHERE f1 = 'foo bar'";
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
@@ -234,7 +246,7 @@ test "SELECT f1, f2 FROM tbl WHERE f1 = 'bar'" {
     try std.testing.expectEqualStrings("f2", res.select.fields.items[1]);
     try std.testing.expectEqualStrings("tbl", res.select.from);
     try std.testing.expectEqualStrings("f1", res.select.where.?.field);
-    try std.testing.expectEqualStrings("bar", res.select.where.?.value);
+    try std.testing.expectEqualStrings("foo bar", res.select.where.?.value);
 }
 
 test "SELECT COUNT(*) FROM tbl" {

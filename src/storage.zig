@@ -20,6 +20,7 @@ pub const PageHeader = struct {
     /// The number of fragmented free bytes within the cell content area.
     fragmented_free_bytes_count: u8,
     cell_offsets: []const usize,
+    right_most_pointer: ?u32,
 
     pub fn parse(reader: std.fs.File.Reader, allocator: std.mem.Allocator) !PageHeader {
         const typ = try reader.readEnum(PageType, .big);
@@ -27,6 +28,10 @@ pub const PageHeader = struct {
         const cell_count = try reader.readInt(u16, .big);
         const cell_content_offset = try reader.readInt(u16, .big);
         const fragmented_free_bytes_count = try reader.readInt(u8, .big);
+        const right_most_pointer = if (typ == PageType.branch_table)
+            try reader.readInt(u32, .big)
+        else
+            null;
 
         return .{
             .type = typ,
@@ -42,6 +47,7 @@ pub const PageHeader = struct {
                 }
                 break :blk offsets.items;
             },
+            .right_most_pointer = right_most_pointer,
         };
     }
 };
@@ -56,6 +62,21 @@ pub const Value = union(enum) {
     Text: []const u8,
     Integer: isize,
     Float: f64,
+};
+
+pub const Pointer = struct {
+    page_number: u32,
+    id: usize,
+
+    pub fn parse(reader: std.fs.File.Reader) !Pointer {
+        const page_number = try reader.readInt(u32, .big);
+        const id = try Varint.parse(reader.any());
+
+        return .{
+            .page_number = page_number,
+            .id = id,
+        };
+    }
 };
 
 pub const Record = struct {
@@ -153,31 +174,59 @@ pub fn Table(comptime R: type) type {
     };
 }
 
-pub const Page = struct {
-    header: PageHeader,
-    records: std.ArrayList(Record),
+pub const Page = union(enum) {
+    leaf_table: LeafTable,
+    internal_table: InternalTable,
+
+    pub const InternalTable = struct {
+        header: PageHeader,
+        pointers: std.ArrayList(Pointer),
+    };
+
+    pub const LeafTable = struct {
+        header: PageHeader,
+
+        records: std.ArrayList(Record),
+    };
 
     pub fn parse(reader: std.fs.File.Reader, allocator: std.mem.Allocator) !Page {
         var page_offset = try reader.context.getPos();
         // I assume there was a good reason (alignment?) for including the db header in the
-        // first page, but it introduces some annouyting "point of attention"...
+        // first page, but it introduces some annoying "points of attention"...
         if (page_offset == 100) {
             page_offset = 0;
         }
 
         const header = try PageHeader.parse(reader, allocator);
-        var records = std.ArrayList(Record).init(allocator);
 
-        for (header.cell_offsets) |offset| {
-            try reader.context.seekTo(page_offset + offset);
+        return switch (header.type) {
+            .leaf_table => {
+                var records = std.ArrayList(Record).init(allocator);
+                for (header.cell_offsets) |offset| {
+                    try reader.context.seekTo(page_offset + offset);
 
-            const r = try records.addOne();
-            r.* = try Record.parse(reader, allocator);
-        }
+                    const r = try records.addOne();
+                    r.* = try Record.parse(reader, allocator);
+                }
+                return .{ .leaf_table = .{
+                    .header = header,
+                    .records = records,
+                } };
+            },
+            .branch_table => {
+                var pointers = std.ArrayList(Pointer).init(allocator);
+                for (header.cell_offsets) |offset| {
+                    try reader.context.seekTo(page_offset + offset);
 
-        return .{
-            .header = header,
-            .records = records,
+                    const r = try pointers.addOne();
+                    r.* = try Pointer.parse(reader);
+                }
+                return .{ .internal_table = .{
+                    .header = header,
+                    .pointers = pointers,
+                } };
+            },
+            else => unreachable,
         };
     }
 };

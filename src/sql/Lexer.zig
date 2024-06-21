@@ -36,6 +36,7 @@ pub const TokenIterator = struct {
                 ')' => .rparen,
                 '[' => .lbracket,
                 ']' => .rbracket,
+                '\'', '"' => .{ .identifier = self.readLiteralString() },
 
                 '0'...'9' => return .{ .integer = self.readInteger() },
 
@@ -90,6 +91,13 @@ pub const TokenIterator = struct {
         return self.readMatching(isNoLinebeak);
     }
 
+    fn readLiteralString(self: *@This()) []const u8 {
+        _ = self.readChar(); // left quote
+        const res = self.readMatching(isNoQuote);
+        _ = self.readChar(); // right quote
+        return res;
+    }
+
     fn readIdentifier(self: *@This()) []const u8 {
         return self.readMatching(isIdentifierChar);
     }
@@ -108,6 +116,10 @@ pub const TokenIterator = struct {
         return self.input[offset..self.i];
     }
 
+    fn isNoQuote(c: ?u8) bool {
+        return if (c) |v| v != '"' and v != '\'' else true;
+    }
+
     fn isIdentifierChar(c: ?u8) bool {
         return if (c) |v| std.ascii.isAlphanumeric(v) or v == '_' else false;
     }
@@ -122,6 +134,7 @@ pub const Token = union(enum) {
     illegal: u8,
     comment: []const u8,
     identifier: []const u8,
+    //literal_string: []const u8,
     integer: []const u8,
 
     operator: Operator,
@@ -137,6 +150,9 @@ pub const Token = union(enum) {
     rparen,
     lbracket,
     rbracket,
+
+    quote,
+    dquote,
 
     pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
         return switch (value) {
@@ -161,6 +177,8 @@ pub const Keyword = enum {
     from,
     count,
     where,
+    not,
+    null,
 };
 
 const Keywords = std.ComptimeStringMapWithEql(Keyword, .{
@@ -176,6 +194,8 @@ const Keywords = std.ComptimeStringMapWithEql(Keyword, .{
     .{ "from", .from },
     .{ "count", .count },
     .{ "where", .where },
+    .{ "not", .not },
+    .{ "null", .null },
 }, std.ascii.eqlIgnoreCase);
 
 /// Operators, sorted by their precedence.
