@@ -58,6 +58,34 @@
         "sample.db",
         "SELECT name, color FROM apples WHERE color = 'Red'"
       ]
+    },
+    {
+      "name": "count superheroes",
+      "type": "lldb",
+      "request": "launch",
+      "cwd": "${workspaceRoot}",
+      "program": "zig",
+      "args": [
+        "run",
+        "./src/main.zig",
+        "--",
+        "superheroes.db",
+        "SELECT count(*) FROM superheroes"
+      ]
+    },
+    {
+      "name": "select superheroes",
+      "type": "lldb",
+      "request": "launch",
+      "cwd": "${workspaceRoot}",
+      "program": "zig",
+      "args": [
+        "run",
+        "./src/main.zig",
+        "--",
+        "superheroes.db",
+        "SELECT id, name FROM superheroes WHERE hair_color = 'Violet Hair'"
+      ]
     }
   ]
 }

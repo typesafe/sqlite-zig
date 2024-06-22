@@ -32,7 +32,7 @@ pub fn main() !void {
 
     const database = try Database.init(file, arena.allocator());
     const header = try database.readHeader();
-    const page = try database.readPage(1);
+    const page = (try database.readPage(1)).leaf_table;
 
     if (std.mem.eql(u8, command, ".dbinfo")) {
         try std.io.getStdOut().writer().print("database page size: {}\n", .{
@@ -58,43 +58,47 @@ pub fn main() !void {
         switch (statement) {
             .select => |select| {
                 if (select.count) |_| {
-                    for (page.records.items) |r| {
-                        const sr = SchemaRecord.fromRecord(r);
-                        if (std.mem.eql(u8, sr.name, select.from)) {
-                            const tbl = try database.readPage(sr.rootpage);
-                            try std.io.getStdOut().writer().print("{}", .{tbl.records.items.len});
-                        }
-                    }
-                    try std.io.getStdOut().writer().print("\n", .{});
+                    const res = try database.countTableRecords(select.from);
+                    try std.io.getStdOut().writer().print("{}\n", .{res});
                 } else {
-                    for (page.records.items) |r| {
-                        const sr = SchemaRecord.fromRecord(r);
-                        if (std.mem.eql(u8, sr.name, select.from)) {
-                            const schema = try Parser.parse(sr.sql, arena.allocator());
-                            const tbl = try database.readPage(sr.rootpage);
-                            const indexes = try arena.allocator().alloc(u32, select.fields.items.len);
-                            for (select.fields.items, 0..) |field, i| {
-                                indexes[i] = schema.create_table.fields.get(field).?.index;
-                            }
+                    var it = try database.iterateTableRecords(select.from, arena.allocator());
+                    defer it.deinit();
 
-                            for (tbl.records.items) |item| {
-                                if (select.where) |where| {
-                                    const item_value = item.fields.items[schema.create_table.fields.get(where.field).?.index].Text;
+                    const schema = try Parser.parse((try database.getTableSchema(select.from)).sql, arena.allocator());
+                    //const tbl = (try database.readPage(schema.rootpage)).leaf_table;
 
-                                    if (!std.mem.eql(u8, item_value, where.value)) {
-                                        continue;
-                                    }
-                                }
+                    const field_indexes = try arena.allocator().alloc(u32, select.fields.items.len);
+                    for (select.fields.items, 0..) |field, i| {
+                        field_indexes[i] = schema.create_table.fields.get(field).?.index;
+                    }
 
-                                for (indexes, 0..) |idx, i| {
-                                    if (i > 0) {
-                                        try std.io.getStdOut().writer().print("|", .{});
-                                    }
-                                    try std.io.getStdOut().writer().print("{s}", .{item.fields.items[idx].Text});
-                                }
-                                try std.io.getStdOut().writer().print("\n", .{});
+                    while (try it.next()) |item| {
+                        if (select.where) |where| {
+                            const matches = switch (item.fields.items[schema.create_table.fields.get(where.field).?.index]) {
+                                .Text => |v| std.mem.eql(u8, v, where.value),
+                                else => false,
+                            };
+                            if (!matches) {
+                                continue;
                             }
                         }
+
+                        for (field_indexes, 0..) |idx, i| {
+                            if (i > 0) {
+                                try std.io.getStdOut().writer().print("|", .{});
+                            }
+
+                            if (idx == 0) {
+                                try std.io.getStdOut().writer().print("{}", .{item.id});
+                            } else {
+                                switch (item.fields.items[idx]) {
+                                    .Null => try std.io.getStdOut().writer().print("NULL", .{}),
+                                    .Text => |v| try std.io.getStdOut().writer().print("{s}", .{v}),
+                                    else => try std.io.getStdOut().writer().print("{any}", .{item.fields.items[idx]}),
+                                }
+                            }
+                        }
+                        try std.io.getStdOut().writer().print("\n", .{});
                     }
                 }
             },
