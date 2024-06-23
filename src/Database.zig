@@ -146,11 +146,6 @@ pub const RecordIterator = struct {
         }
 
         var op = &self.stack.items[self.stack.items.len - 1];
-        if (op.pop) |v| {
-            op.pop = null;
-            _ = try std.io.getStdOut().write("pop\n");
-            return v;
-        }
 
         while (true) {
             switch (op.page) {
@@ -163,7 +158,7 @@ pub const RecordIterator = struct {
                     return ret;
                 },
                 .internal_table => |t| {
-                    const page_nr = blk: {
+                    const child_page_nr = blk: {
                         if (op.offset == t.pointers.items.len) {
                             _ = self.stack.pop();
                             break :blk t.header.right_most_pointer.?;
@@ -174,7 +169,7 @@ pub const RecordIterator = struct {
                         }
                     };
 
-                    try self.stack.append(.{ .page = try self.database.readPage(page_nr), .offset = 0 });
+                    try self.stack.append(.{ .page = try self.database.readPage(child_page_nr), .offset = 0 });
                     op = &self.stack.items[self.stack.items.len - 1];
                 },
                 .internal_index => |t| {
@@ -184,13 +179,9 @@ pub const RecordIterator = struct {
                                 const r = t.records.items[op.offset];
                                 op.offset += 1;
                                 if (r.fields.items[0].compare(v) == .gt) {
-                                    //_ = try std.io.getStdOut().write("GT\n");
                                     _ = self.stack.pop();
                                     break :blk r.page_number.?;
                                 } else if (r.fields.items[0].compare(v) == .eq) {
-                                    //_ = try std.io.getStdOut().write("EQ\n");
-
-                                    op.pop = r;
                                     break :blk r.page_number.?;
                                 }
                             }
@@ -218,10 +209,8 @@ pub const RecordIterator = struct {
                             const r = t.records.items[op.offset];
                             op.offset += 1;
                             if (r.fields.items[0].compare(v) == .gt) {
-                                //_ = try std.io.getStdOut().write("GT LEAF\n");
                                 return null;
                             } else if (r.fields.items[0].compare(v) == .eq) {
-                                //_ = try std.io.getStdOut().write("MATCH\n");
                                 return r;
                             }
                         }
@@ -240,6 +229,5 @@ pub const RecordIterator = struct {
     const OffsettedPage = struct {
         page: storage.Page,
         offset: usize,
-        pop: ?storage.Record = null,
     };
 };
