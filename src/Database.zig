@@ -95,26 +95,25 @@ pub fn getRow(self: Self, page: storage.Page, id: usize) !?storage.LeafTableCell
     };
 }
 
-pub fn iterateTableRecords(self: Self, table: []const u8) !RecordIterator {
+pub fn iterateTable(self: Self, table: []const u8) !TableIterator {
     const page = try self.getTableRootPage(table);
-    return self.iterateBtreeRecords(page);
+    return self.iterateTableBTree(page);
 }
 
-pub fn iterateBtreeRecords(self: Self, root_page: storage.Page) !RecordIterator {
-    return try RecordIterator.init(self, root_page, null);
+pub fn iterateTableBTree(self: Self, root_page: storage.Page) !TableIterator {
+    return try TableIterator.init(self, root_page);
 }
 
-pub fn iterateIndexRecords(self: Self, root_page: storage.Page, value: storage.Value) !RecordIterator {
-    return try RecordIterator.init(self, root_page, value);
+pub fn iterateIndexBTree(self: Self, root_page: storage.Page, value: storage.Value) !IndexIterator {
+    return try IndexIterator.init(self, root_page, value);
 }
 
-pub const RecordIterator = struct {
+pub const TableIterator = struct {
     arena: std.heap.ArenaAllocator,
     database: Self,
     stack: std.ArrayList(OffsettedPage),
-    value: ?storage.Value,
 
-    pub fn init(database: Self, root_page: storage.Page, value: ?storage.Value) !RecordIterator {
+    pub fn init(database: Self, root_page: storage.Page) !TableIterator {
         var arena = std.heap.ArenaAllocator.init(database.allocator);
         var stack = std.ArrayList(OffsettedPage).init(arena.allocator());
         try stack.append(.{ .page = root_page, .offset = 0 });
@@ -123,15 +122,14 @@ pub const RecordIterator = struct {
             .arena = arena,
             .database = database,
             .stack = stack,
-            .value = value,
         };
     }
 
-    pub fn deinit(self: *RecordIterator) void {
+    pub fn deinit(self: *TableIterator) void {
         self.arena.deinit();
     }
 
-    pub fn next(self: *RecordIterator) !?storage.Cell {
+    pub fn next(self: *TableIterator) !?storage.Cell {
         if (self.stack.items.len == 0) {
             return null;
         }
@@ -163,56 +161,89 @@ pub const RecordIterator = struct {
                     try self.stack.append(.{ .page = try self.database.readPage(child_page_nr), .offset = 0 });
                     op = &self.stack.items[self.stack.items.len - 1];
                 },
+
+                else => unreachable,
+            }
+        }
+    }
+
+    const OffsettedPage = struct {
+        page: storage.Page,
+        offset: usize,
+    };
+};
+
+pub const IndexIterator = struct {
+    arena: std.heap.ArenaAllocator,
+    database: Self,
+    stack: std.ArrayList(OffsettedPage),
+    value: storage.Value,
+
+    pub fn init(database: Self, root_page: storage.Page, value: storage.Value) !IndexIterator {
+        var arena = std.heap.ArenaAllocator.init(database.allocator);
+        var stack = std.ArrayList(OffsettedPage).init(arena.allocator());
+        try stack.append(.{ .page = root_page, .offset = 0 });
+
+        return .{
+            .arena = arena,
+            .database = database,
+            .stack = stack,
+            .value = value,
+        };
+    }
+
+    pub fn deinit(self: *IndexIterator) void {
+        self.arena.deinit();
+    }
+
+    pub fn next(self: *IndexIterator) !?storage.Cell {
+        if (self.stack.items.len == 0) {
+            return null;
+        }
+
+        var op = &self.stack.items[self.stack.items.len - 1];
+
+        while (true) {
+            switch (op.page) {
                 .internal_index => |t| {
                     const page_nr = blk: {
-                        if (self.value) |v| {
-                            while (op.offset < t.cells.items.len) {
-                                const r = t.cells.items[op.offset];
-                                op.offset += 1;
-                                if (r.fields.items[0].compare(v) == .gt) {
-                                    _ = self.stack.pop();
-                                    break :blk r.page_number;
-                                } else if (r.fields.items[0].compare(v) == .eq) {
-                                    break :blk r.page_number;
-                                }
-                            }
-                            if (self.stack.items.len > 0) {
-                                _ = self.stack.pop();
-                            }
-                            break :blk t.header.right_most_pointer;
-                        } else if (op.offset == t.cells.items.len) {
-                            _ = self.stack.pop();
-                            break :blk t.header.right_most_pointer.?;
-                        } else {
-                            const ptr = t.cells.items[op.offset];
-                            op.offset += 1;
-                            break :blk ptr.page_number;
-                        }
-                    };
-                    if (page_nr) |pn| {
-                        try self.stack.append(.{ .page = try self.database.readPage(pn), .offset = 0 });
-                        op = &self.stack.items[self.stack.items.len - 1];
-                    }
-                },
-                .leaf_index => |t| {
-                    if (self.value) |v| {
                         while (op.offset < t.cells.items.len) {
                             const r = t.cells.items[op.offset];
                             op.offset += 1;
-                            if (r.fields.items[0].compare(v) == .gt) {
-                                return null;
-                            } else if (r.fields.items[0].compare(v) == .eq) {
-                                return .{ .leaf_index = r };
+
+                            switch (r.fields.items[0].compare(self.value)) {
+                                .lt => continue,
+                                .gt => {
+                                    _ = self.stack.pop();
+                                },
+                                .eq => {},
                             }
+
+                            break :blk r.page_number;
                         }
 
-                        return null;
-                    } else {
-                        const ret = t.cells.items[op.offset];
-                        op.offset += 1;
-                        return .{ .leaf_index = ret };
-                    }
+                        _ = self.stack.pop();
+                        break :blk t.header.right_most_pointer.?;
+                    };
+
+                    try self.stack.append(.{ .page = try self.database.readPage(page_nr), .offset = 0 });
+                    op = &self.stack.items[self.stack.items.len - 1];
                 },
+                .leaf_index => |t| {
+                    while (op.offset < t.cells.items.len) {
+                        const r = t.cells.items[op.offset];
+                        op.offset += 1;
+
+                        switch (r.fields.items[0].compare(self.value)) {
+                            .eq => return .{ .leaf_index = r },
+                            .gt => break,
+                            .lt => continue,
+                        }
+                    }
+
+                    return null;
+                },
+                else => unreachable,
             }
         }
     }

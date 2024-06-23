@@ -56,7 +56,7 @@ fn handleSelect(database: Database, statement: Parser.SqlStatement, allocator: s
                 const tbl_page = try database.getTableRootPage("companies");
                 const idx_page = try database.getIndexPage("idx_companies_country");
 
-                var it = try database.iterateIndexRecords(idx_page, Value{ .Text = select.where.?.value });
+                var it = try database.iterateIndexBTree(idx_page, Value{ .Text = select.where.?.value });
                 defer it.deinit();
 
                 while (try it.next()) |r| {
@@ -64,7 +64,7 @@ fn handleSelect(database: Database, statement: Parser.SqlStatement, allocator: s
                     try stdout.print("{}|{}\n", .{ row.id, row.fields.items[1] });
                 }
             } else {
-                var it = try database.iterateTableRecords(select.from);
+                var it = try database.iterateTable(select.from);
                 defer it.deinit();
 
                 const schema = try Parser.parse((try database.getTableSchema(select.from)).sql, allocator);
