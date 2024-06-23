@@ -4,6 +4,9 @@ const Database = @import("Database.zig");
 const SchemaRecord = @import("./sql/SchemaRecord.zig");
 const Parser = @import("./sql/Parser.zig");
 const Value = @import("./storage.zig").Value;
+const Command = @import("cli/Command.zig").Command;
+
+const stdout = std.io.getStdOut().writer();
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -14,10 +17,7 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
-    const database_file_path: []const u8 = args[1];
-    const command: []const u8 = args[2];
-
-    var file = try std.fs.cwd().openFile(database_file_path, .{});
+    var file = try std.fs.cwd().openFile(args[1], .{});
     defer file.close();
 
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -27,85 +27,79 @@ pub fn main() !void {
 
     const page = (try database.readPage(1)).leaf_table;
 
-    if (std.mem.eql(u8, command, ".dbinfo")) {
-        try std.io.getStdOut().writer().print("database page size: {}\n", .{
-            database.header.page_size,
-        });
+    switch (try Command.parse(args[2], arena.allocator())) {
+        .sql => |statement| try handleSelect(database, statement, arena.allocator()),
+        .dbinfo => try stdout.print("database page size: {}\nnumber of tables: {}\n", .{ database.header.page_size, page.header.cell_count }),
+        .tables => {
+            for (page.records.items, 0..) |r, i| {
+                if (i > 0) {
+                    try stdout.print(" ", .{});
+                }
 
-        try std.io.getStdOut().writer().print("number of tables: {}\n", .{
-            page.header.cell_count,
-        });
-    } else if (std.mem.eql(u8, command, ".tables")) {
-        for (page.records.items, 0..) |_, i| {
-            if (i > 0) {
-                try std.io.getStdOut().writer().print(" ", .{});
+                try stdout.print("{s}", .{r.fields.items[1].Text});
             }
 
-            const r = page.records.items[i];
-            try std.io.getStdOut().writer().print("{s}", .{r.fields.items[1].Text});
-        }
-        try std.io.getStdOut().writer().print("\n", .{});
-    } else if (std.ascii.eqlIgnoreCase(command[0..6], "SELECT")) {
-        const statement = try Parser.parse(command, arena.allocator());
+            try stdout.print("\n", .{});
+        },
+    }
+}
 
-        switch (statement) {
-            .select => |select| {
-                if (select.count) |_| {
-                    const res = try database.countTableRecords(select.from);
-                    try std.io.getStdOut().writer().print("{}\n", .{res});
-                } else if (std.ascii.eqlIgnoreCase("companies", select.from)) {
-                    // Let's hard-code this case for now...
+fn handleSelect(database: Database, statement: Parser.SqlStatement, allocator: std.mem.Allocator) !void {
+    switch (statement) {
+        .select => |select| {
+            if (select.count) |_| {
+                const res = try database.countTableRecords(select.from);
+                try stdout.print("{}\n", .{res});
+            } else if (std.ascii.eqlIgnoreCase("companies", select.from)) {
+                // Let's hard-code this case for now...
 
-                    const tbl_page = try database.getTableRootPage("companies");
-                    const idx_page = try database.getIndexPage("idx_companies_country");
+                const tbl_page = try database.getTableRootPage("companies");
+                const idx_page = try database.getIndexPage("idx_companies_country");
 
-                    var it = try database.iterateIndexRecords(idx_page, Value{ .Text = select.where.?.value });
-                    defer it.deinit();
+                var it = try database.iterateIndexRecords(idx_page, Value{ .Text = select.where.?.value });
+                defer it.deinit();
 
-                    while (try it.next()) |r| {
-                        const row = (try database.getRow(tbl_page, @as(usize, @intCast(r.fields.items[1].Integer)))).?;
-                        try std.io.getStdOut().writer().print("{}|{}\n", .{ row.id.?, row.fields.items[1] });
-                    }
-                } else {
-                    var it = try database.iterateTableRecords(select.from);
-                    defer it.deinit();
-
-                    const schema = try Parser.parse((try database.getTableSchema(select.from)).sql, arena.allocator());
-
-                    const field_indexes = try arena.allocator().alloc(u32, select.fields.items.len);
-                    for (select.fields.items, 0..) |field, i| {
-                        field_indexes[i] = schema.create_table.fields.get(field).?.index;
-                    }
-
-                    while (try it.next()) |item| {
-                        if (select.where) |where| {
-                            const matches = switch (item.fields.items[schema.create_table.fields.get(where.field).?.index]) {
-                                .Text => |v| std.mem.eql(u8, v, where.value),
-                                else => false,
-                            };
-                            if (!matches) {
-                                continue;
-                            }
-                        }
-
-                        for (field_indexes, 0..) |idx, i| {
-                            if (i > 0) {
-                                try std.io.getStdOut().writer().print("|", .{});
-                            }
-
-                            if (idx == 0) {
-                                try std.io.getStdOut().writer().print("{}", .{item.id.?});
-                            } else {
-                                try std.io.getStdOut().writer().print("{}", .{item.fields.items[idx]});
-                            }
-                        }
-                        try std.io.getStdOut().writer().print("\n", .{});
-                    }
+                while (try it.next()) |r| {
+                    const row = (try database.getRow(tbl_page, @as(usize, @intCast(r.fields.items[1].Integer)))).?;
+                    try stdout.print("{}|{}\n", .{ row.id.?, row.fields.items[1] });
                 }
-            },
-            else => try std.io.getStdOut().writer().print("not supported\n", .{}),
-        }
-    } else {
-        try std.io.getStdOut().writer().print("{s}\n", .{command});
+            } else {
+                var it = try database.iterateTableRecords(select.from);
+                defer it.deinit();
+
+                const schema = try Parser.parse((try database.getTableSchema(select.from)).sql, allocator);
+
+                const field_indexes = try allocator.alloc(u32, select.fields.items.len);
+                for (select.fields.items, 0..) |field, i| {
+                    field_indexes[i] = schema.create_table.fields.get(field).?.index;
+                }
+
+                while (try it.next()) |item| {
+                    if (select.where) |where| {
+                        const matches = switch (item.fields.items[schema.create_table.fields.get(where.field).?.index]) {
+                            .Text => |v| std.mem.eql(u8, v, where.value),
+                            else => false,
+                        };
+                        if (!matches) {
+                            continue;
+                        }
+                    }
+
+                    for (field_indexes, 0..) |idx, i| {
+                        if (i > 0) {
+                            try stdout.print("|", .{});
+                        }
+
+                        if (idx == 0) {
+                            try stdout.print("{}", .{item.id.?});
+                        } else {
+                            try stdout.print("{}", .{item.fields.items[idx]});
+                        }
+                    }
+                    try stdout.print("\n", .{});
+                }
+            }
+        },
+        else => try stdout.print("not supported\n", .{}),
     }
 }
