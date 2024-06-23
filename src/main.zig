@@ -31,7 +31,7 @@ pub fn main() !void {
         .sql => |statement| try handleSelect(database, statement, arena.allocator()),
         .dbinfo => try stdout.print("database page size: {}\nnumber of tables: {}\n", .{ database.header.page_size, page.header.cell_count }),
         .tables => {
-            for (page.records.items, 0..) |r, i| {
+            for (page.cells.items, 0..) |r, i| {
                 if (i > 0) {
                     try stdout.print(" ", .{});
                 }
@@ -60,8 +60,8 @@ fn handleSelect(database: Database, statement: Parser.SqlStatement, allocator: s
                 defer it.deinit();
 
                 while (try it.next()) |r| {
-                    const row = (try database.getRow(tbl_page, @as(usize, @intCast(r.fields.items[1].Integer)))).?;
-                    try stdout.print("{}|{}\n", .{ row.id.?, row.fields.items[1] });
+                    const row = (try database.getRow(tbl_page, @as(usize, @intCast(r.leaf_index.fields.items[1].Integer)))).?;
+                    try stdout.print("{}|{}\n", .{ row.id, row.fields.items[1] });
                 }
             } else {
                 var it = try database.iterateTableRecords(select.from);
@@ -76,7 +76,7 @@ fn handleSelect(database: Database, statement: Parser.SqlStatement, allocator: s
 
                 while (try it.next()) |item| {
                     if (select.where) |where| {
-                        const matches = switch (item.fields.items[schema.create_table.fields.get(where.field).?.index]) {
+                        const matches = switch (item.leaf_table.fields.items[schema.create_table.fields.get(where.field).?.index]) {
                             .Text => |v| std.mem.eql(u8, v, where.value),
                             else => false,
                         };
@@ -91,9 +91,9 @@ fn handleSelect(database: Database, statement: Parser.SqlStatement, allocator: s
                         }
 
                         if (idx == 0) {
-                            try stdout.print("{}", .{item.id.?});
+                            try stdout.print("{}", .{item.leaf_table.id});
                         } else {
-                            try stdout.print("{}", .{item.fields.items[idx]});
+                            try stdout.print("{}", .{item.leaf_table.fields.items[idx]});
                         }
                     }
                     try stdout.print("\n", .{});

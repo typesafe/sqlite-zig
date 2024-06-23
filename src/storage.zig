@@ -3,8 +3,8 @@ const std = @import("std");
 const Varint = @import("./storage/Varint.zig");
 
 pub const PageType = enum(u8) {
-    branch_index = 0x02,
-    branch_table = 0x05,
+    internal_index = 0x02,
+    internal_table = 0x05,
     leaf_index = 0x0a,
     leaf_table = 0x0d,
 };
@@ -19,7 +19,9 @@ pub const PageHeader = struct {
     cell_content_offset: u16,
     /// The number of fragmented free bytes within the cell content area.
     fragmented_free_bytes_count: u8,
-    cell_offsets: []const usize,
+    // The list of cell memory offsets in the page.
+    cell_offsets: []const u16,
+    // A pointer to the "right page", only set for internal pages.
     right_most_pointer: ?u32,
 
     pub fn parse(reader: std.fs.File.Reader, allocator: std.mem.Allocator) !PageHeader {
@@ -28,7 +30,7 @@ pub const PageHeader = struct {
         const cell_count = try reader.readInt(u16, .big);
         const cell_content_offset = try reader.readInt(u16, .big);
         const fragmented_free_bytes_count = try reader.readInt(u8, .big);
-        const right_most_pointer = if (typ == PageType.branch_table or typ == PageType.branch_index)
+        const right_most_pointer = if (typ == PageType.internal_table or typ == PageType.internal_index)
             try reader.readInt(u32, .big)
         else
             null;
@@ -40,7 +42,7 @@ pub const PageHeader = struct {
             .cell_content_offset = cell_content_offset,
             .fragmented_free_bytes_count = fragmented_free_bytes_count,
             .cell_offsets = blk: {
-                var offsets = try std.ArrayList(usize).initCapacity(allocator, cell_count);
+                var offsets = try std.ArrayList(u16).initCapacity(allocator, cell_count);
                 var values = try offsets.addManyAsSlice(cell_count);
                 for (0..cell_count) |i| {
                     values[i] = try reader.readInt(u16, .big);
@@ -145,11 +147,11 @@ fn parseFields(reader: std.fs.File.Reader, allocator: std.mem.Allocator) !std.Ar
     return fields;
 }
 
-pub const Pointer = struct {
+pub const InternalTableCell = struct {
     page_number: u32,
     id: usize,
 
-    pub fn parse(reader: std.fs.File.Reader) !Pointer {
+    pub fn parse(reader: std.fs.File.Reader) !InternalTableCell {
         const page_number = try reader.readInt(u32, .big);
         const id = try Varint.parse(reader.any());
 
@@ -160,13 +162,36 @@ pub const Pointer = struct {
     }
 };
 
-pub const Record = struct {
-    page_number: ?u32 = null,
-    id: ?usize = null,
-    len: ?usize = null,
+pub const Cell = union(enum) {
+    leaf_table: LeafTableCell,
+    interior_table: InternalTableCell,
+    leaf_index: LeafIndexCell,
+    interior_index: InteriorIndexCell,
+};
+
+pub const LeafTableCell = struct {
+    id: usize,
+    len: usize,
     fields: std.ArrayList(Value),
 
-    pub fn parseInteriorIndexCell(reader: std.fs.File.Reader, allocator: std.mem.Allocator) !Record {
+    pub fn parse(reader: std.fs.File.Reader, allocator: std.mem.Allocator) !LeafTableCell {
+        const len = try Varint.parse(reader.any());
+        const id = try Varint.parse(reader.any());
+
+        return .{
+            .id = id,
+            .len = len,
+            .fields = try parseFields(reader, allocator),
+        };
+    }
+};
+
+pub const InteriorIndexCell = struct {
+    page_number: u32,
+    len: usize,
+    fields: std.ArrayList(Value),
+
+    pub fn parse(reader: std.fs.File.Reader, allocator: std.mem.Allocator) !InteriorIndexCell {
         const left_page_nr = try reader.readInt(u32, .big);
         const len = try Varint.parse(reader.any());
 
@@ -176,7 +201,13 @@ pub const Record = struct {
             .fields = try parseFields(reader, allocator),
         };
     }
-    pub fn parseLeafIndexCell(reader: std.fs.File.Reader, allocator: std.mem.Allocator) !Record {
+};
+
+pub const LeafIndexCell = struct {
+    len: usize,
+    fields: std.ArrayList(Value),
+
+    pub fn parse(reader: std.fs.File.Reader, allocator: std.mem.Allocator) !LeafIndexCell {
         const len = try Varint.parse(reader.any());
 
         return .{
@@ -184,96 +215,7 @@ pub const Record = struct {
             .fields = try parseFields(reader, allocator),
         };
     }
-
-    pub fn parse(reader: std.fs.File.Reader, allocator: std.mem.Allocator) !Record {
-        // Record header:
-        const len = try Varint.parse(reader.any());
-        const id = try Varint.parse(reader.any());
-
-        // we need to deal with this annoying structure:
-        // PL L1 L2 L2 L3 V1 V1 V1 V2 V2 V2 V2 V2 V3 V3
-        // -- -- ----- -- -------- -------------- -----
-        // PL (payload offset) -> point to first byte of V1
-        // Ln -> length (and type) of Value n
-        // Vn -> actual value of field
-        //
-        // A number of fields instead of an offset in bytes would have been so much more practical! :-/
-        // now we need to keep track of how many bytes we read... (instead of just moving forward)
-
-        const payload_start = try reader.context.getPos(); // points to PL now
-        const payload_offset = try Varint.parse(reader.any()); // could be more than 1 byte
-
-        var len_offset = try reader.context.getPos(); // points to L1
-        var value_offset = payload_start + payload_offset; // points to V1
-
-        var fields = std.ArrayList(Value).init(allocator);
-
-        while (true) {
-            if (len_offset == payload_start + payload_offset) {
-                break;
-            }
-
-            const field = try fields.addOne();
-
-            try reader.context.seekTo(len_offset);
-            const serial_type = try Varint.parse(reader.any());
-            len_offset = try reader.context.getPos();
-
-            try reader.context.seekTo(value_offset);
-
-            field.* = switch (serial_type) {
-                0 => .{ .Null = {} },
-                1 => .{ .Integer = try reader.readInt(i8, .big) },
-                2 => .{ .Integer = try reader.readInt(i16, .big) },
-                3 => .{ .Integer = try reader.readInt(i24, .big) },
-                4 => .{ .Integer = try reader.readInt(i32, .big) },
-                5 => .{ .Integer = try reader.readInt(i48, .big) },
-                6 => .{ .Integer = try reader.readInt(i64, .big) },
-                7 => blk: {
-                    var bytes: [8]u8 = undefined;
-                    _ = try reader.readAll(&bytes);
-
-                    break :blk .{ .Float = std.mem.bytesToValue(f64, &bytes) };
-                },
-                8 => .{ .Integer = 0 },
-                9 => .{ .Integer = 1 },
-                10...11 => unreachable,
-                else => blk: {
-                    // text = 13, blob = 12
-                    const t: usize = if (serial_type & 1 == 1) 13 else 12;
-
-                    const l = (serial_type - t) >> 1;
-                    var value = try std.ArrayList(u8).initCapacity(allocator, l);
-                    _ = try value.addManyAt(0, l);
-                    _ = try reader.read(value.items);
-
-                    break :blk .{ .Text = value.items };
-                },
-            };
-            value_offset = try reader.context.getPos();
-        }
-
-        return .{
-            .id = id,
-            .len = len,
-            .fields = fields,
-        };
-    }
 };
-
-pub fn Table(comptime R: type) type {
-    return struct {
-        pub const RecordIterator = struct {
-            pub fn next(_: *@This()) ?*R {
-                return null;
-            }
-        };
-
-        pub fn recordIterator() RecordIterator {
-            return RecordIterator{};
-        }
-    };
-}
 
 pub const Page = union(enum) {
     leaf_table: LeafTable,
@@ -283,23 +225,22 @@ pub const Page = union(enum) {
 
     pub const InternalTable = struct {
         header: PageHeader,
-        pointers: std.ArrayList(Pointer),
+        cells: std.ArrayList(InternalTableCell),
     };
 
     pub const LeafTable = struct {
         header: PageHeader,
-
-        records: std.ArrayList(Record),
+        cells: std.ArrayList(LeafTableCell),
     };
 
     pub const LeafIndex = struct {
         header: PageHeader,
-        records: std.ArrayList(Record),
+        cells: std.ArrayList(LeafIndexCell),
     };
 
     pub const InternalIndex = struct {
         header: PageHeader,
-        records: std.ArrayList(Record),
+        cells: std.ArrayList(InteriorIndexCell),
     };
 
     pub fn parse(reader: std.fs.File.Reader, allocator: std.mem.Allocator) !Page {
@@ -314,55 +255,55 @@ pub const Page = union(enum) {
 
         return switch (header.type) {
             .leaf_table => {
-                var records = std.ArrayList(Record).init(allocator);
+                var cells = std.ArrayList(LeafTableCell).init(allocator);
                 for (header.cell_offsets) |offset| {
                     try reader.context.seekTo(page_offset + offset);
 
-                    const r = try records.addOne();
-                    r.* = try Record.parse(reader, allocator);
+                    const r = try cells.addOne();
+                    r.* = try LeafTableCell.parse(reader, allocator);
                 }
                 return .{ .leaf_table = .{
                     .header = header,
-                    .records = records,
+                    .cells = cells,
                 } };
             },
-            .branch_table => {
-                var pointers = std.ArrayList(Pointer).init(allocator);
+            .internal_table => {
+                var pointers = std.ArrayList(InternalTableCell).init(allocator);
                 for (header.cell_offsets) |offset| {
                     try reader.context.seekTo(page_offset + offset);
 
                     const r = try pointers.addOne();
-                    r.* = try Pointer.parse(reader);
+                    r.* = try InternalTableCell.parse(reader);
                 }
                 return .{ .internal_table = .{
                     .header = header,
-                    .pointers = pointers,
+                    .cells = pointers,
                 } };
             },
-            .branch_index => {
-                var records = std.ArrayList(Record).init(allocator);
+            .internal_index => {
+                var cells = std.ArrayList(InteriorIndexCell).init(allocator);
                 for (header.cell_offsets) |offset| {
                     try reader.context.seekTo(page_offset + offset);
 
-                    const r = try records.addOne();
-                    r.* = try Record.parseInteriorIndexCell(reader, allocator);
+                    const r = try cells.addOne();
+                    r.* = try InteriorIndexCell.parse(reader, allocator);
                 }
                 return .{ .internal_index = .{
                     .header = header,
-                    .records = records,
+                    .cells = cells,
                 } };
             },
             .leaf_index => {
-                var records = std.ArrayList(Record).init(allocator);
+                var cells = std.ArrayList(LeafIndexCell).init(allocator);
                 for (header.cell_offsets) |offset| {
                     try reader.context.seekTo(page_offset + offset);
 
-                    const r = try records.addOne();
-                    r.* = try Record.parseLeafIndexCell(reader, allocator);
+                    const r = try cells.addOne();
+                    r.* = try LeafIndexCell.parse(reader, allocator);
                 }
                 return .{ .leaf_index = .{
                     .header = header,
-                    .records = records,
+                    .cells = cells,
                 } };
             },
         };

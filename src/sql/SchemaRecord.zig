@@ -1,5 +1,5 @@
 const std = @import("std");
-const Record = @import("../storage.zig").Record;
+const Value = @import("../storage.zig").Value;
 
 const Self = @This();
 
@@ -9,12 +9,12 @@ tbl_name: []const u8,
 rootpage: usize,
 sql: []const u8,
 
-pub fn fromRecord(r: Record) Self {
+pub fn fromValues(values: []const Value) Self {
     return .{
-        .type = r.fields.items[0].Text,
-        .name = r.fields.items[1].Text,
-        .tbl_name = r.fields.items[2].Text,
-        .rootpage = @bitCast(r.fields.items[3].Integer),
-        .sql = r.fields.items[4].Text,
+        .type = values[0].Text,
+        .name = values[1].Text,
+        .tbl_name = values[2].Text,
+        .rootpage = @bitCast(values[3].Integer),
+        .sql = values[4].Text,
     };
 }
