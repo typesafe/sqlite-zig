@@ -60,7 +60,7 @@
       ]
     },
     {
-      "name": "count superheroes",
+      "name": "select with index",
       "type": "lldb",
       "request": "launch",
       "cwd": "${workspaceRoot}",
@@ -69,8 +69,8 @@
         "run",
         "./src/main.zig",
         "--",
-        "superheroes.db",
-        "SELECT count(*) FROM superheroes"
+        "companies.db",
+        "SELECT id, name FROM companies WHERE country = 'chad'"
       ]
     },
     {

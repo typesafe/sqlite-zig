@@ -3,6 +3,7 @@ const std = @import("std");
 const Database = @import("Database.zig");
 const SchemaRecord = @import("./sql/SchemaRecord.zig");
 const Parser = @import("./sql/Parser.zig");
+const Value = @import("./storage.zig").Value;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -52,12 +53,24 @@ pub fn main() !void {
                 if (select.count) |_| {
                     const res = try database.countTableRecords(select.from);
                     try std.io.getStdOut().writer().print("{}\n", .{res});
+                } else if (std.ascii.eqlIgnoreCase("companies", select.from)) {
+                    // Let's hard-code this case for now...
+
+                    const tbl_page = try database.getTableRootPage("companies");
+                    const idx_page = try database.getIndexPage("idx_companies_country");
+
+                    var it = try database.iterateIndexRecords(idx_page, Value{ .Text = select.where.?.value });
+                    defer it.deinit();
+
+                    while (try it.next()) |r| {
+                        const row = (try database.getRow(tbl_page, @as(usize, @intCast(r.fields.items[1].Integer)))).?;
+                        try std.io.getStdOut().writer().print("{}|{}\n", .{ row.id.?, row.fields.items[1] });
+                    }
                 } else {
-                    var it = try database.iterateTableRecords(select.from, arena.allocator());
+                    var it = try database.iterateTableRecords(select.from);
                     defer it.deinit();
 
                     const schema = try Parser.parse((try database.getTableSchema(select.from)).sql, arena.allocator());
-                    //const tbl = (try database.readPage(schema.rootpage)).leaf_table;
 
                     const field_indexes = try arena.allocator().alloc(u32, select.fields.items.len);
                     for (select.fields.items, 0..) |field, i| {
@@ -81,13 +94,9 @@ pub fn main() !void {
                             }
 
                             if (idx == 0) {
-                                try std.io.getStdOut().writer().print("{}", .{item.id});
+                                try std.io.getStdOut().writer().print("{}", .{item.id.?});
                             } else {
-                                switch (item.fields.items[idx]) {
-                                    .Null => try std.io.getStdOut().writer().print("NULL", .{}),
-                                    .Text => |v| try std.io.getStdOut().writer().print("{s}", .{v}),
-                                    else => try std.io.getStdOut().writer().print("{any}", .{item.fields.items[idx]}),
-                                }
+                                try std.io.getStdOut().writer().print("{}", .{item.fields.items[idx]});
                             }
                         }
                         try std.io.getStdOut().writer().print("\n", .{});

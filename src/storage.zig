@@ -28,7 +28,7 @@ pub const PageHeader = struct {
         const cell_count = try reader.readInt(u16, .big);
         const cell_content_offset = try reader.readInt(u16, .big);
         const fragmented_free_bytes_count = try reader.readInt(u8, .big);
-        const right_most_pointer = if (typ == PageType.branch_table)
+        const right_most_pointer = if (typ == PageType.branch_table or typ == PageType.branch_index)
             try reader.readInt(u32, .big)
         else
             null;
@@ -57,7 +57,93 @@ pub const Value = union(enum) {
     Text: []const u8,
     Integer: isize,
     Float: f64,
+
+    pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        return switch (value) {
+            .Null => writer.print("NULL", .{}),
+            .Text => |v| writer.print("{s}", .{v}),
+            .Integer => |v| writer.print("{any}", .{v}),
+            .Float => |v| writer.print("{any}", .{v}),
+        };
+    }
+
+    pub fn compare(self: Value, rhs: Value) std.math.Order {
+        return switch (self) {
+            .Null => .lt,
+            .Text => |v| std.ascii.orderIgnoreCase(v, rhs.Text),
+            .Integer => |v| std.math.order(v, rhs.Integer),
+            .Float => |v| std.math.order(v, rhs.Float),
+        };
+    }
 };
+
+fn parseFields(reader: std.fs.File.Reader, allocator: std.mem.Allocator) !std.ArrayList(Value) {
+
+    // we need to deal with this annoying structure:
+    // PL L1 L2 L2 L3 V1 V1 V1 V2 V2 V2 V2 V2 V3 V3
+    // -- -- ----- -- -------- -------------- -----
+    // PL (payload offset) -> point to first byte of V1
+    // Ln -> length (and type) of Value n
+    // Vn -> actual value of field
+    //
+    // A number of fields instead of an offset in bytes would have been so much more practical! :-/
+    // now we need to keep track of how many bytes we read... (instead of just moving forward)
+
+    const payload_start = try reader.context.getPos(); // points to PL now
+    const payload_offset = try Varint.parse(reader.any()); // could be more than 1 byte
+
+    var len_offset = try reader.context.getPos(); // points to L1
+    var value_offset = payload_start + payload_offset; // points to V1
+
+    var fields = std.ArrayList(Value).init(allocator);
+
+    while (true) {
+        if (len_offset == payload_start + payload_offset) {
+            break;
+        }
+
+        const field = try fields.addOne();
+
+        try reader.context.seekTo(len_offset);
+        const serial_type = try Varint.parse(reader.any());
+        len_offset = try reader.context.getPos();
+
+        try reader.context.seekTo(value_offset);
+
+        field.* = switch (serial_type) {
+            0 => .{ .Null = {} },
+            1 => .{ .Integer = try reader.readInt(i8, .big) },
+            2 => .{ .Integer = try reader.readInt(i16, .big) },
+            3 => .{ .Integer = try reader.readInt(i24, .big) },
+            4 => .{ .Integer = try reader.readInt(i32, .big) },
+            5 => .{ .Integer = try reader.readInt(i48, .big) },
+            6 => .{ .Integer = try reader.readInt(i64, .big) },
+            7 => blk: {
+                var bytes: [8]u8 = undefined;
+                _ = try reader.readAll(&bytes);
+
+                break :blk .{ .Float = std.mem.bytesToValue(f64, &bytes) };
+            },
+            8 => .{ .Integer = 0 },
+            9 => .{ .Integer = 1 },
+            10...11 => unreachable,
+            else => blk: {
+                // text = 13, blob = 12
+                const t: usize = if (serial_type & 1 == 1) 13 else 12;
+
+                const l = (serial_type - t) >> 1;
+                var value = try std.ArrayList(u8).initCapacity(allocator, l);
+                _ = try value.addManyAt(0, l);
+                _ = try reader.read(value.items);
+
+                break :blk .{ .Text = value.items };
+            },
+        };
+        value_offset = try reader.context.getPos();
+    }
+
+    return fields;
+}
 
 pub const Pointer = struct {
     page_number: u32,
@@ -75,15 +161,34 @@ pub const Pointer = struct {
 };
 
 pub const Record = struct {
-    id: usize,
+    page_number: ?u32 = null,
+    id: ?usize = null,
+    len: ?usize = null,
     fields: std.ArrayList(Value),
+
+    pub fn parseInteriorIndexCell(reader: std.fs.File.Reader, allocator: std.mem.Allocator) !Record {
+        const left_page_nr = try reader.readInt(u32, .big);
+        const len = try Varint.parse(reader.any());
+
+        return .{
+            .page_number = left_page_nr,
+            .len = len,
+            .fields = try parseFields(reader, allocator),
+        };
+    }
+    pub fn parseLeafIndexCell(reader: std.fs.File.Reader, allocator: std.mem.Allocator) !Record {
+        const len = try Varint.parse(reader.any());
+
+        return .{
+            .len = len,
+            .fields = try parseFields(reader, allocator),
+        };
+    }
 
     pub fn parse(reader: std.fs.File.Reader, allocator: std.mem.Allocator) !Record {
         // Record header:
         const len = try Varint.parse(reader.any());
         const id = try Varint.parse(reader.any());
-
-        _ = len;
 
         // we need to deal with this annoying structure:
         // PL L1 L2 L2 L3 V1 V1 V1 V2 V2 V2 V2 V2 V3 V3
@@ -150,6 +255,7 @@ pub const Record = struct {
 
         return .{
             .id = id,
+            .len = len,
             .fields = fields,
         };
     }
@@ -172,6 +278,8 @@ pub fn Table(comptime R: type) type {
 pub const Page = union(enum) {
     leaf_table: LeafTable,
     internal_table: InternalTable,
+    leaf_index: LeafIndex,
+    internal_index: InternalIndex,
 
     pub const InternalTable = struct {
         header: PageHeader,
@@ -181,6 +289,16 @@ pub const Page = union(enum) {
     pub const LeafTable = struct {
         header: PageHeader,
 
+        records: std.ArrayList(Record),
+    };
+
+    pub const LeafIndex = struct {
+        header: PageHeader,
+        records: std.ArrayList(Record),
+    };
+
+    pub const InternalIndex = struct {
+        header: PageHeader,
         records: std.ArrayList(Record),
     };
 
@@ -221,7 +339,32 @@ pub const Page = union(enum) {
                     .pointers = pointers,
                 } };
             },
-            else => unreachable,
+            .branch_index => {
+                var records = std.ArrayList(Record).init(allocator);
+                for (header.cell_offsets) |offset| {
+                    try reader.context.seekTo(page_offset + offset);
+
+                    const r = try records.addOne();
+                    r.* = try Record.parseInteriorIndexCell(reader, allocator);
+                }
+                return .{ .internal_index = .{
+                    .header = header,
+                    .records = records,
+                } };
+            },
+            .leaf_index => {
+                var records = std.ArrayList(Record).init(allocator);
+                for (header.cell_offsets) |offset| {
+                    try reader.context.seekTo(page_offset + offset);
+
+                    const r = try records.addOne();
+                    r.* = try Record.parseLeafIndexCell(reader, allocator);
+                }
+                return .{ .leaf_index = .{
+                    .header = header,
+                    .records = records,
+                } };
+            },
         };
     }
 };
