@@ -7,15 +7,11 @@ const Parser = @import("./sql/Parser.zig");
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
+
     const allocator = gpa.allocator();
 
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
-
-    // if (args.len < 3) {
-    //     try std.io.getStdErr().writer().print("Usage: {s} <database_file_path> <command>\n", .{args[0]});
-    //     return;
-    // }
 
     const database_file_path: []const u8 = args[1];
     const command: []const u8 = args[2];
@@ -23,20 +19,16 @@ pub fn main() !void {
     var file = try std.fs.cwd().openFile(database_file_path, .{});
     defer file.close();
 
-    // const b64 = std.base64.standard.Encoder.init(std.base64.standard.alphabet_chars, std.base64.standard.pad_char);
-
-    // b64.encode([], file.readAll(buffer: []u8));
-
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
     const database = try Database.init(file, arena.allocator());
-    const header = try database.readHeader();
+
     const page = (try database.readPage(1)).leaf_table;
 
     if (std.mem.eql(u8, command, ".dbinfo")) {
         try std.io.getStdOut().writer().print("database page size: {}\n", .{
-            header.page_size,
+            database.header.page_size,
         });
 
         try std.io.getStdOut().writer().print("number of tables: {}\n", .{
