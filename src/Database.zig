@@ -20,16 +20,10 @@ pub fn init(file: std.fs.File, allocator: std.mem.Allocator) !Self {
 }
 
 pub fn readPage(self: Self, number: usize) !storage.Page {
-    if (number == 1) {
-        // page 1 contains the DB header
-        try self.file.seekTo(100);
-    } else {
-        try self.file.seekTo(self.header.page_size * (number - 1));
-    }
+    // first page contains database header of 100 bytes
+    try self.file.seekTo(if (number == 1) 100 else self.header.page_size * (number - 1));
 
-    const reader = self.file.reader();
-
-    return try storage.Page.parse(reader, self.allocator);
+    return try storage.Page.parse(self.file.reader(), self.allocator);
 }
 
 pub fn getTableRootPage(self: Self, table_name: []const u8) !storage.Page {
@@ -61,9 +55,7 @@ pub fn getTableSchema(self: Self, table: []const u8) !SchemaRecord {
 }
 
 pub fn countTableRecords(self: Self, table: []const u8) !usize {
-    const page = try self.getTableRootPage(table);
-
-    return self.countPageRecords(page);
+    return self.countPageRecords(try self.getTableRootPage(table));
 }
 
 pub fn countPageRecords(self: Self, page: storage.Page) !usize {
@@ -77,7 +69,7 @@ pub fn countPageRecords(self: Self, page: storage.Page) !usize {
             count += try self.countPageRecords(try self.readPage(t.header.right_most_pointer.?));
             return count;
         },
-        else => unreachable,
+        else => error.NoTablePage,
     };
 }
 
@@ -93,14 +85,13 @@ pub fn getRow(self: Self, page: storage.Page, id: usize) !?storage.Record {
         },
         .internal_table => |t| {
             for (t.pointers.items) |ptr| {
-                // TODO: binary search?
                 if (id <= ptr.id) {
                     return try self.getRow(try self.readPage(ptr.page_number), id);
                 }
             }
             return try self.getRow(try self.readPage(t.header.right_most_pointer.?), id);
         },
-        else => unreachable,
+        else => error.NoTablePage,
     };
 }
 
