@@ -39,8 +39,8 @@ pub fn main() !void {
             if (i > 0) {
                 try std.io.getStdOut().writer().print(" ", .{});
             }
-            // test script expects tables in reverse order :-/
-            const r = page.records.items[page.records.items.len - 1 - i];
+
+            const r = page.records.items[i];
             try std.io.getStdOut().writer().print("{s}", .{r.fields.items[1].Text});
         }
         try std.io.getStdOut().writer().print("\n", .{});

@@ -43,7 +43,7 @@ pub const PageHeader = struct {
                 var offsets = try std.ArrayList(usize).initCapacity(allocator, cell_count);
                 var values = try offsets.addManyAsSlice(cell_count);
                 for (0..cell_count) |i| {
-                    values[cell_count - 1 - i] = try reader.readInt(u16, .big);
+                    values[i] = try reader.readInt(u16, .big);
                 }
                 break :blk offsets.items;
             },
@@ -51,11 +51,6 @@ pub const PageHeader = struct {
         };
     }
 };
-
-// pub const Field = struct {
-//     name: []const u8,
-//     value: Value,
-// };
 
 pub const Value = union(enum) {
     Null: void,
