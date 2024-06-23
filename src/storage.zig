@@ -151,7 +151,8 @@ pub const InternalTableCell = struct {
     page_number: u32,
     id: usize,
 
-    pub fn parse(reader: std.fs.File.Reader) !InternalTableCell {
+    // allocator arg makes this match the signature of the the other cells
+    pub fn parse(reader: std.fs.File.Reader, _: std.mem.Allocator) !InternalTableCell {
         const page_number = try reader.readInt(u32, .big);
         const id = try Varint.parse(reader.any());
 
@@ -255,60 +256,43 @@ pub const Page = union(enum) {
 
         return switch (header.type) {
             .leaf_table => {
-                var cells = std.ArrayList(LeafTableCell).init(allocator);
-                for (header.cell_offsets) |offset| {
-                    try reader.context.seekTo(page_offset + offset);
-
-                    const r = try cells.addOne();
-                    r.* = try LeafTableCell.parse(reader, allocator);
-                }
                 return .{ .leaf_table = .{
                     .header = header,
-                    .cells = cells,
+                    .cells = try readCells(LeafTableCell, reader, page_offset, header.cell_offsets, allocator),
                 } };
             },
             .internal_table => {
-                var pointers = std.ArrayList(InternalTableCell).init(allocator);
-                for (header.cell_offsets) |offset| {
-                    try reader.context.seekTo(page_offset + offset);
-
-                    const r = try pointers.addOne();
-                    r.* = try InternalTableCell.parse(reader);
-                }
                 return .{ .internal_table = .{
                     .header = header,
-                    .cells = pointers,
+                    .cells = try readCells(InternalTableCell, reader, page_offset, header.cell_offsets, allocator),
                 } };
             },
             .internal_index => {
-                var cells = std.ArrayList(InteriorIndexCell).init(allocator);
-                for (header.cell_offsets) |offset| {
-                    try reader.context.seekTo(page_offset + offset);
-
-                    const r = try cells.addOne();
-                    r.* = try InteriorIndexCell.parse(reader, allocator);
-                }
                 return .{ .internal_index = .{
                     .header = header,
-                    .cells = cells,
+                    .cells = try readCells(InteriorIndexCell, reader, page_offset, header.cell_offsets, allocator),
                 } };
             },
             .leaf_index => {
-                var cells = std.ArrayList(LeafIndexCell).init(allocator);
-                for (header.cell_offsets) |offset| {
-                    try reader.context.seekTo(page_offset + offset);
-
-                    const r = try cells.addOne();
-                    r.* = try LeafIndexCell.parse(reader, allocator);
-                }
                 return .{ .leaf_index = .{
                     .header = header,
-                    .cells = cells,
+                    .cells = try readCells(LeafIndexCell, reader, page_offset, header.cell_offsets, allocator),
                 } };
             },
         };
     }
 };
+
+fn readCells(comptime C: type, reader: std.fs.File.Reader, page_offset: usize, cell_offsets: []const u16, allocator: std.mem.Allocator) !std.ArrayList(C) {
+    var cells = std.ArrayList(C).init(allocator);
+
+    for (cell_offsets) |offset| {
+        try reader.context.seekTo(page_offset + offset);
+        try cells.append(try C.parse(reader, allocator));
+    }
+
+    return cells;
+}
 
 pub const DatabaseHeader = struct {
     /// The database page size in bytes. Must be a power of two between 512 and 32768 inclusive, or the value 1 representing a page size of 65536.
